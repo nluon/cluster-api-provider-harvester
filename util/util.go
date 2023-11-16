@@ -8,9 +8,10 @@ import (
 	"io"
 	"net/http"
 
-	hvclientset "github.com/harvester/harvester/pkg/generated/clientset/versioned"
 	"github.com/pkg/errors"
 	infrav1 "github.com/rancher-sandbox/cluster-api-provider-harvester/api/v1alpha1"
+	hvclientset "github.com/rancher-sandbox/cluster-api-provider-harvester/pkg/clientset/versioned"
+	regen "github.com/zach-klippenstein/goregen"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -92,4 +93,30 @@ func GetHarvesterClientFromSecret(secret *corev1.Secret) (*hvclientset.Clientset
 
 	return hvclientset.NewForConfig(hvRESTConfig)
 
+}
+
+// RandomID returns a random string used as an ID internally in Harvester.
+func RandomID() string {
+	res, err := regen.Generate("[a-z]{3}[0-9][a-z]")
+	if err != nil {
+		fmt.Println("Random function was not successful!")
+		return ""
+	}
+	return res
+}
+
+// NewTrue returns a pointer to true
+func NewTrue() *bool {
+	b := true
+	return &b
+}
+
+// Filter is a generic filter function
+func Filter[T any](ss []T, test func(T) bool) (ret []T) {
+	for _, s := range ss {
+		if test(s) {
+			ret = append(ret, s)
+		}
+	}
+	return
 }

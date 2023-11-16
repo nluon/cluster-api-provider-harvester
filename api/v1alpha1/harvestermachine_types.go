@@ -54,6 +54,9 @@ type HarvesterMachineSpec struct {
 	// SSHUser is the user that should be used to connect to the VMs using SSH.
 	SSHUser string `json:"sshUser"`
 
+	// SSHKeyPair is the name of the SSH KeyPair to use for the sshUser
+	SSHKeyPair string `json:"sshKeyPair"`
+
 	// Volumes is a list of Volumes to attach to the VM
 	Volumes []Volume `json:"volumes"`
 
@@ -75,6 +78,7 @@ type Volume struct {
 	VolumeType VolumeType `json:"volumeType"`
 
 	// ImageName is the name of the image to use if the volumeType is "image"
+	// This field should have the format "<NAMESPACE>/<NAME>" since vmimage is a namespaced ressource in Harvester Clusters.
 	// +optional
 	ImageName string `json:"imageName,omitempty"`
 

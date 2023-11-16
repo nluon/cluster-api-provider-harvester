@@ -254,6 +254,10 @@ spec:
                   controller. This will be "<harvester vm namespace>-<harvester vm
                   name>"
                 type: string
+              sshKeyPair:
+                description: SSHKeyPair is the name of the SSH KeyPair to use for
+                  the sshUser
+                type: string
               sshUser:
                 description: SSHUser is the user that should be used to connect to
                   the VMs using SSH.
@@ -274,7 +278,8 @@ spec:
                       type: integer
                     imageName:
                       description: ImageName is the name of the image to use if the
-                        volumeType is "image"
+                        volumeType is "image" This field should have the format "<NAMESPACE>/<NAME>"
+                        since vmimage is a namespaced ressource in Harvester Clusters.
                       type: string
                     storageClass:
                       description: StorageClass is the name of the storage class to
@@ -594,6 +599,7 @@ spec:
             - cpu
             - memory
             - networks
+            - sshKeyPair
             - sshUser
             - volumes
             type: object

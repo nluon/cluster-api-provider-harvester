@@ -18,11 +18,21 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 
+	harvesterv1beta1 "github.com/harvester/harvester/pkg/apis/harvesterhci.io/v1beta1"
+	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
+	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	kubevirtv1 "kubevirt.io/api/core/v1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/util"
 	"sigs.k8s.io/cluster-api/util/annotations"
@@ -38,6 +48,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	infrav1 "github.com/rancher-sandbox/cluster-api-provider-harvester/api/v1alpha1"
+	harvclient "github.com/rancher-sandbox/cluster-api-provider-harvester/pkg/clientset/versioned"
 	locutil "github.com/rancher-sandbox/cluster-api-provider-harvester/util"
 )
 
@@ -46,6 +57,15 @@ type HarvesterMachineReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
+
+const (
+	vmAnnotationPVC        = "harvesterhci.io/volumeClaimTemplates"
+	vmAnnotationNetworkIps = "networks.harvesterhci.io/ips"
+	hvAnnotationDiskNames  = "harvesterhci.io/diskNames"
+	hvAnnotationSSH        = "harvesterhci.io/sshNames"
+	hvAnnotationImageID    = "harvesterhci.io/imageId"
+	listImagesSelector     = ".spec.displayName="
+)
 
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=harvestermachines,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=harvestermachines/status,verbs=get;update;patch
@@ -97,7 +117,7 @@ func (r *HarvesterMachineReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *HarvesterMachineReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
-	clusterToHarvesterMachine, err := util.ClusterToTypedObjectsMapper(mgr.GetClient(), &infrav1.HarvesterMachineList{}, mgr.GetScheme())
+	clusterToHarvesterMachine, err := util.ClusterToObjectsMapper(mgr.GetClient(), &infrav1.HarvesterMachineList{}, mgr.GetScheme())
 	if err != nil {
 		return err
 	}
@@ -170,7 +190,6 @@ func (r *HarvesterMachineReconciler) ReconcileNormal(ctx context.Context, hvMach
 	logger = logger.WithValues("machine", ownerMachine, "cluster", ownerCluster)
 	ctx = ctrl.LoggerInto(ctx, logger)
 
-	// TODO: Continue implementing what happens to machine
 	var hvCluster *infrav1.HarvesterCluster
 
 	hvClusterKey := types.NamespacedName{
@@ -195,16 +214,308 @@ func (r *HarvesterMachineReconciler) ReconcileNormal(ctx context.Context, hvMach
 		logger.Error(err, "unable to create Harvester client from Datasource secret", hvClient)
 	}
 
-	//createdVM, err := createVMFromHarvesterMachine(hvMachine, hvClient)
-	//if err != nil {
-	//logger.Error(err, "unable to create VM from HarvesterMachine information")
-	//}
+	_, err = createVMFromHarvesterMachine(hvMachine, hvClient)
+	if err != nil {
+		logger.Error(err, "unable to create VM from HarvesterMachine information")
+	}
 
 	//TODO: Set the `spec.ProviderID`
 	//TODO: Set status.ready = true
 	//TODO: Set status.addresses with IP addresses of VM
 
 	return ctrl.Result{}, nil
+}
+
+func createVMFromHarvesterMachine(hvMachine *infrav1.HarvesterMachine, hvClient *harvclient.Clientset) (*kubevirtv1.VirtualMachine, error) {
+	var err error
+
+	vmLabels := map[string]string{
+		"harvesterhci.io/creator": "harvester",
+	}
+	vmiLabels := vmLabels
+
+	vmName := hvMachine.Name
+
+	vmiLabels["harvesterhci.io/vmName"] = vmName
+	vmiLabels["harvesterhci.io/vmNamePrefix"] = vmName
+	diskRandomID := locutil.RandomID()
+	pvcName := vmName + "-disk-0-" + diskRandomID
+
+	hasVMIMageName := func(volume infrav1.Volume) bool { return volume.ImageName != "" }
+
+	// Supposing that the imageName field in HarvesterMachine.Spec.Volumes has the format "<NAMESPACE>/<NAME>",
+	// we use the following to get vmImageNS and vmImageName
+	imageVolumes := locutil.Filter[infrav1.Volume](hvMachine.Spec.Volumes, hasVMIMageName)
+	vmImage, err := getImageFromHarvesterMachine(imageVolumes, hvClient)
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to find VM image reference in HarvesterMachine")
+	}
+	pvcAnnotation, err := buildPVCAnnotationFromImageID(&imageVolumes[0], pvcName, hvMachine.Spec.TargetNamespace, vmImage)
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to generate PVC annotation on VM")
+	}
+
+	vmTemplate, err := buildVMTemplate(hvClient, pvcName, vmiLabels, *hvMachine)
+	if err != nil {
+		return &kubevirtv1.VirtualMachine{}, errors.Wrap(err, "unable to build VM definition")
+	}
+
+	if vmTemplate.ObjectMeta.Labels == nil {
+		vmTemplate.ObjectMeta.Labels = make(map[string]string)
+	}
+
+	vmTemplate.ObjectMeta.Labels["harvesterhci.io/vmNamePrefix"] = vmName
+	vmTemplate.Spec.Affinity = &v1.Affinity{
+		PodAntiAffinity: &v1.PodAntiAffinity{
+			PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
+				{
+					Weight: int32(1),
+					PodAffinityTerm: v1.PodAffinityTerm{
+						TopologyKey: "kubernetes.io/hostname",
+						LabelSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{
+								"harvesterhci.io/vmNamePrefix": vmName,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ubuntuVM := &kubevirtv1.VirtualMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmName,
+			Namespace: hvMachine.Spec.TargetNamespace,
+			Annotations: map[string]string{
+
+				vmAnnotationPVC:        pvcAnnotation,
+				vmAnnotationNetworkIps: "[]",
+			},
+			Labels: vmLabels,
+		},
+		Spec: kubevirtv1.VirtualMachineSpec{
+			Running: locutil.NewTrue(),
+
+			Template: vmTemplate,
+		},
+	}
+
+	hvCreatedMachine, err := hvClient.KubevirtV1().VirtualMachines(hvMachine.Spec.TargetNamespace).Create(context.TODO(), ubuntuVM, metav1.CreateOptions{})
+
+	if err != nil {
+		return hvCreatedMachine, err
+	}
+
+	return hvCreatedMachine, nil
+}
+
+func buildPVCAnnotationFromImageID(imageVolume *infrav1.Volume, pvcName string, pvcNamespace string, vmImage *harvesterv1beta1.VirtualMachineImage) (string, error) {
+
+	block := v1.PersistentVolumeBlock
+	scName := "longhorn"
+	pvc := &v1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pvcName,
+			Namespace: pvcNamespace,
+			Annotations: map[string]string{
+				hvAnnotationImageID: vmImage.Namespace + "/" + vmImage.Name,
+			},
+		},
+		Spec: v1.PersistentVolumeClaimSpec{
+			AccessModes: []v1.PersistentVolumeAccessMode{
+				v1.ReadWriteMany,
+			},
+			Resources: v1.ResourceRequirements{
+				Requests: v1.ResourceList{
+					"storage": *imageVolume.VolumeSize,
+				},
+			},
+			VolumeMode:       &block,
+			StorageClassName: &scName,
+		},
+	}
+
+	pvcJsonString, err := json.Marshal(pvc)
+	if err != nil {
+		return "", err
+	}
+
+	return strconv.Quote(string(pvcJsonString)), nil
+}
+
+func getImageFromHarvesterMachine(imageVolumes []infrav1.Volume, hvClient *harvclient.Clientset) (image *harvesterv1beta1.VirtualMachineImage, err error) {
+
+	vmImageNamespacedName := imageVolumes[0].ImageName
+
+	vmImageNameParts := strings.Split(vmImageNamespacedName, "/")
+	if len(vmImageNameParts) != 2 {
+		return &harvesterv1beta1.VirtualMachineImage{}, fmt.Errorf("ImageName is HarvesterMachine is Malformed, expecting <NAMESPACE>/<NAME> format")
+	}
+
+	foundImages, err := hvClient.HarvesterhciV1beta1().VirtualMachineImages(vmImageNameParts[0]).List(context.TODO(), metav1.ListOptions{
+		FieldSelector: listImagesSelector + vmImageNameParts[1],
+	})
+
+	if err != nil {
+		return &harvesterv1beta1.VirtualMachineImage{}, err
+	}
+	if len(foundImages.Items) == 0 {
+		return &harvesterv1beta1.VirtualMachineImage{}, fmt.Errorf("impossible to find referenced VM image from imageName field in HarvesterMachine")
+	}
+
+	// returning namespaced name of the vm image
+	return &foundImages.Items[0], nil
+}
+
+// buildVMTemplate creates a *kubevirtv1.VirtualMachineInstanceTemplateSpec from the CLI Flags and some computed values
+func buildVMTemplate(hvClient *harvclient.Clientset,
+	pvcName string, vmiLabels map[string]string, hvMachine infrav1.HarvesterMachine) (vmTemplate *kubevirtv1.VirtualMachineInstanceTemplateSpec, err error) {
+
+	var err1 error
+	cloudInitUserData, err1 := getCloudInitData(hvMachine, "user")
+	vmTemplate = nil
+	if err1 != nil {
+		err = fmt.Errorf("error during getting cloud init user data from Harvester: %w", err1)
+		return
+	}
+
+	var sshKey *harvesterv1beta1.KeyPair
+
+	keyName := hvMachine.Spec.SSHKeyPair
+	sshKey, err1 = hvClient.HarvesterhciV1beta1().KeyPairs(hvMachine.Spec.TargetNamespace).Get(context.TODO(), keyName, metav1.GetOptions{})
+	if err1 != nil {
+		err = fmt.Errorf("error during getting keypair from Harvester: %w", err1)
+		return
+	}
+	logrus.Debugf("SSH Key Name %s given does exist!", hvMachine.Spec.SSHKeyPair)
+
+	if sshKey == nil || sshKey == (&harvesterv1beta1.KeyPair{}) {
+		err = fmt.Errorf("no keypair could be defined")
+		return
+	}
+
+	cloudInitSSHSection := "\nssh_authorized_keys:\n  - " + sshKey.Spec.PublicKey + "\n"
+
+	if err1 != nil {
+		err = fmt.Errorf("error during getting cloud-init for networking: %w", err1)
+		return
+	}
+
+	vmTemplate = &kubevirtv1.VirtualMachineInstanceTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
+				hvAnnotationDiskNames: "[\"" + pvcName + "\"]",
+				hvAnnotationSSH:       "[\"" + pvcName + "\"]",
+			},
+			Labels: vmiLabels,
+		},
+		Spec: kubevirtv1.VirtualMachineInstanceSpec{
+			Hostname: hvMachine.Name,
+			Networks: []kubevirtv1.Network{
+
+				{
+					Name: "nic-1",
+
+					NetworkSource: kubevirtv1.NetworkSource{
+						Multus: &kubevirtv1.MultusNetwork{
+							NetworkName: "vlan1",
+						},
+					},
+				},
+			},
+			Volumes: []kubevirtv1.Volume{
+				{
+					Name: "disk-0",
+					VolumeSource: kubevirtv1.VolumeSource{
+						PersistentVolumeClaim: &kubevirtv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: v1.PersistentVolumeClaimVolumeSource{
+								ClaimName: pvcName,
+							},
+						},
+					},
+				},
+				{
+					Name: "cloudinitdisk",
+					VolumeSource: kubevirtv1.VolumeSource{
+						CloudInitNoCloud: &kubevirtv1.CloudInitNoCloudSource{
+							UserData: cloudInitUserData + cloudInitSSHSection,
+						},
+					},
+				},
+			},
+			Domain: kubevirtv1.DomainSpec{
+				CPU: &kubevirtv1.CPU{
+					Cores:   uint32(hvMachine.Spec.CPU),
+					Sockets: uint32(hvMachine.Spec.CPU),
+					Threads: uint32(hvMachine.Spec.CPU),
+				},
+				Devices: kubevirtv1.Devices{
+					Inputs: []kubevirtv1.Input{
+						{
+							Bus:  "usb",
+							Type: "tablet",
+							Name: "tablet",
+						},
+					},
+					Interfaces: []kubevirtv1.Interface{
+						{
+							Name:                   "nic-1",
+							Model:                  "virtio",
+							InterfaceBindingMethod: kubevirtv1.DefaultBridgeNetworkInterface().InterfaceBindingMethod,
+						},
+					},
+					Disks: []kubevirtv1.Disk{
+						{
+							Name: "disk-0",
+							DiskDevice: kubevirtv1.DiskDevice{
+								Disk: &kubevirtv1.DiskTarget{
+									Bus: "virtio",
+								},
+							},
+						},
+						{
+							Name: "cloudinitdisk",
+							DiskDevice: kubevirtv1.DiskDevice{
+								Disk: &kubevirtv1.DiskTarget{
+									Bus: "virtio",
+								},
+							},
+						},
+					},
+				},
+				Resources: kubevirtv1.ResourceRequirements{
+					Requests: v1.ResourceList{
+						"memory": resource.MustParse(hvMachine.Spec.Memory),
+					},
+				},
+			},
+			Affinity: &v1.Affinity{
+				PodAntiAffinity: &v1.PodAntiAffinity{
+					PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
+						{
+							Weight: int32(1),
+							PodAffinityTerm: v1.PodAffinityTerm{
+								TopologyKey: "kubernetes.io/hostname",
+								LabelSelector: &metav1.LabelSelector{
+									MatchLabels: map[string]string{
+										"harvesterhci.io/vmNamePrefix": hvMachine.Name,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	return
+}
+
+func getCloudInitData(hvMachine infrav1.HarvesterMachine, s string) (string, error) {
+
+	// TODO: Implement
+	return "", nil
 }
 
 func (r *HarvesterMachineReconciler) ReconcileDelete(ctx context.Context, hvMachine *infrav1.HarvesterMachine) (res ctrl.Result, rerr error) {
