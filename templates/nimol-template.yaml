@@ -9,6 +9,7 @@ metadata:
   namespace: ${NAMESPACE}
   name: ${CLUSTER_NAME} 
   labels:
+${RANCHER_TURTLES_LABEL}
     ccm: external
     csi: external
     cni: external
@@ -30,7 +31,8 @@ metadata:
 spec:
   targetNamespace: default
   loadBalancerConfig:
-    ipamType: dhcp
+    ipamType: pool
+    ipPoolRef: ${IP_POOL_NAME}
     listeners:
     - name: rke2-server
       port: 9345
@@ -118,11 +120,11 @@ spec:
       sshUser: ubuntu
       sshKeyPair: ${SSH_KEYPAIR}  
       networks:
-      - default/untagged
+      - ${VM_NETWORK}
       volumes:
       - volumeType: image 
         imageName: ${VM_IMAGE_NAME}
-        volumeSize: 50Gi
+        volumeSize: ${VM_DISK_SIZE}
         bootOrder: 0
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
@@ -138,11 +140,11 @@ spec:
       sshUser: ubuntu
       sshKeyPair: ${SSH_KEYPAIR}  
       networks:
-      - default/untagged
+      - ${VM_NETWORK}
       volumes:
       - volumeType: image 
         imageName: ${VM_IMAGE_NAME}
-        volumeSize: 50Gi
+        volumeSize: ${VM_DISK_SIZE}
         bootOrder: 0
 ---
 apiVersion: addons.cluster.x-k8s.io/v1beta1
@@ -157,7 +159,7 @@ spec:
   resources:
   - kind: ConfigMap
     name: cloud-controller-manager-addon
-  strategy: ApplyOnce
+  strategy: Reconcile
 ---
 apiVersion: addons.cluster.x-k8s.io/v1beta1
 kind: ClusterResourceSet
@@ -171,7 +173,7 @@ spec:
   resources:
   - kind: ConfigMap
     name: harvester-csi-driver-addon
-  strategy: ApplyOnce
+  strategy: Reconcile
 ---
 apiVersion: addons.cluster.x-k8s.io/v1beta1
 kind: ClusterResourceSet
@@ -185,7 +187,7 @@ spec:
   resources:
   - kind: ConfigMap
     name: calico-helm-config
-  strategy: ApplyOnce
+  strategy: Reconcile
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -565,17 +567,16 @@ data:
         name: harvester-cloud-controller-manager
         namespace: kube-system
 #${CLOUD_CONFIG_SECRET}
+    ---
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: cloud-config
+      namespace: kube-system
+    type: Opaque
+    data:
+      cloud-config: YXBpVmVyc2lvbjogdjEKY2x1c3RlcnM6Ci0gY2x1c3RlcjoKICAgIGNlcnRpZmljYXRlLWF1dGhvcml0eS1kYXRhOiBMUzB0TFMxQ1JVZEpUaUJEUlZKVVNVWkpRMEZVUlMwdExTMHRDazFKU1VKMlZFTkRRVmRQWjBGM1NVSkJaMGxDUVVSQlMwSm5aM0ZvYTJwUFVGRlJSRUZxUWtkTlVuZDNSMmRaUkZaUlVVdEZlRTVyWlZjMWFHSlhiR29LWWtkc2VtUkhWblZhV0VsMFlqTktiazFUV1hkS1FWbEVWbEZSUkVSQ01XdGxWelZvWWxkc2FtSkhiSHBrUjFaMVdsaEpkRmt5UmtGTlZHTjVUVVJWTVFwT1ZGVXhUVlJCWlVaM01IbE9SRUV6VFVScmVVMUVRVEZPVkVaaFJuY3dlazVFUVROTlJHTjVUVVJCTVU1VVJtRk5SVmw0U0VSQllVSm5UbFpDUVc5VUNrVXlValZpYlVaMFlWZE9jMkZZVGpCYVZ6VnNZMmt4ZG1OdFkzaEtha0ZyUW1kT1ZrSkJUVTFJVjFJMVltMUdkR0ZYVG5OaFdFNHdXbGMxYkdOcE1Xb0tXVlZCZUU1NlNYZE9WRlV4VGxSVmVFMUdhM2RGZDFsSVMyOWFTWHBxTUVOQlVWbEpTMjlhU1hwcU1FUkJVV05FVVdkQlJYQlRSbU0zY2paMlVVbDNTd3BRYld0WlIwSlhUelF3UjAxS00zTkZTSGM0TWs4ek4zQlBiR1ZaUWpGWloyWkxZbmxzZHpWeFZsSktVV1ZpV1daTVYwaHRWbTEyTlhoS1lWQmxXVFIzQ25GWmJ6VXJUQ3RpWkdGT1EwMUZRWGRFWjFsRVZsSXdVRUZSU0M5Q1FWRkVRV2RMYTAxQk9FZEJNVlZrUlhkRlFpOTNVVVpOUVUxQ1FXWTRkMGhSV1VRS1ZsSXdUMEpDV1VWR1MwVlhlWEZNWlRocWRYSjJVekpJTjFVM1EzZzBOak5OWVZwRlRVRnZSME5EY1VkVFRUUTVRa0ZOUTBFd1owRk5SVlZEU1VSVmRnb3hUMGx1YTFKdmJubzFaa1pVVVZRclNFNHlWaXRrTUVKdFV6TnhiME5GVFdrNFFXMUZhazFWUVdsRlFUaEVLMDgxUzNFME1rZFBWakpvT1ZrMlEyeEVDbGRXVlRReWFtWldZa3BWZFhob1pEVnNRVnBxZHpGclBRb3RMUzB0TFVWT1JDQkRSVkpVU1VaSlEwRlVSUzB0TFMwdAogICAgc2VydmVyOiBodHRwczovLzEwLjQzLjE2MC4xMTkvazhzL2NsdXN0ZXJzL2MtbS1yZnNrd21zdAogIG5hbWU6IGNsdXN0ZXIKY29udGV4dHM6Ci0gY29udGV4dDoKICAgIGNsdXN0ZXI6IGNsdXN0ZXIKICAgIHVzZXI6IHVzZXIKICBuYW1lOiBkZWZhdWx0CmN1cnJlbnQtY29udGV4dDogZGVmYXVsdApraW5kOiBDb25maWcKcHJlZmVyZW5jZXM6IHt9CnVzZXJzOgotIG5hbWU6IHVzZXIKICB1c2VyOgogICAgdG9rZW46IHUtMng0aGU3ZWtvbDpya3BxNHJsNHB3cWs3am0ycXNsZ3NzZ2Joajl6cmc1NnJxNXc0ZDVyNm01eng3bjRoajVzcnMK
 ---
-#${CLOUD_CONFIG_SECRET}
-#    apiVersion: v1
-#    kind: Secret
-#    metadata:
-#      name: cloud-config
-#      namespace: kube-system
-#    type: Opaque
-#    data:
-#      cloud-config: YXBpVmVyc2lvbjogdjEKY2x1c3RlcnM6Ci0gY2x1c3RlcjoKICAgIGNlcnRpZmljYXRlLWF1dGhvcml0eS1kYXRhOiBMUzB0TFMxQ1JVZEpUaUJEUlZKVVNVWkpRMEZVUlMwdExTMHRDazFKU1VKMlJFTkRRVmRQWjBGM1NVSkJaMGxDUVVSQlMwSm5aM0ZvYTJwUFVGRlJSRUZxUWtkTlVuZDNSMmRaUkZaUlVVdEZlRTVyWlZjMWFHSlhiR29LWWtkc2VtUkhWblZhV0VsMFlqTktiazFUV1hkS1FWbEVWbEZSUkVSQ01XdGxWelZvWWxkc2FtSkhiSHBrUjFaMVdsaEpkRmt5UmtGTlZHTjVUVVJKZUFwUFZFRTFUa1JCWlVaM01IbE9SRUV6VFVSVmVVMXFUVFJOVkZKaFJuY3dlazVFUVROTlJFMTVUV3BOTkUxVVVtRk5SVmw0U0VSQllVSm5UbFpDUVc5VUNrVXlValZpYlVaMFlWZE9jMkZZVGpCYVZ6VnNZMmt4ZG1OdFkzaEtha0ZyUW1kT1ZrSkJUVTFJVjFJMVltMUdkR0ZYVG5OaFdFNHdXbGMxYkdOcE1Xb0tXVlZCZUU1NlNYZE5ha1UxVFVSck1FMUdhM2RGZDFsSVMyOWFTWHBxTUVOQlVWbEpTMjlhU1hwcU1FUkJVV05FVVdkQlJTdG9VWGhoWW1Odk1YZDZRUXB3U0ZGTWVXUmtXVGRrVFdoRlEwaHphbmQyUkhob2RWaFJUMDh6TDFjNFVFODNia3BZTUM5MFFsaHphREJWVmtkUGNpODNVemg1YWs5SkswZGlVSEUyQ2tvMWR6WTNTa1JJTTNGT1EwMUZRWGRFWjFsRVZsSXdVRUZSU0M5Q1FWRkVRV2RMYTAxQk9FZEJNVlZrUlhkRlFpOTNVVVpOUVUxQ1FXWTRkMGhSV1VRS1ZsSXdUMEpDV1VWR1JXSjBXa3BEU0ZsT05tcDVUVzlLUTFKS1VUSm9WRzVZVkVsMFRVRnZSME5EY1VkVFRUUTVRa0ZOUTBFd1kwRk5SVkZEU1VoSlRBcE5Salp1YkRnelZrWnZjVkpPVG1oQlluWmphMFZVUWtvelZDdE5WVWRtTTJOeE4zQnlNVE5vUVdsQ2VVTlBTWHBsYmxoWGFESTRaM1puUm5RelpucG1Da1ZpWjFWWVpYZElTMDFVVFdSMFJFRXlNVGhqYVVFOVBRb3RMUzB0TFVWT1JDQkRSVkpVU1VaSlEwRlVSUzB0TFMwdAogICAgc2VydmVyOiBodHRwczovLzEwLjQzLjExLjgxL2s4cy9jbHVzdGVycy9jLW0ta3J0NXE5YmMKICBuYW1lOiBjbHVzdGVyCmNvbnRleHRzOgotIGNvbnRleHQ6CiAgICBjbHVzdGVyOiBjbHVzdGVyCiAgICB1c2VyOiB1c2VyCiAgbmFtZTogZGVmYXVsdApjdXJyZW50LWNvbnRleHQ6IGRlZmF1bHQKa2luZDogQ29uZmlnCnByZWZlcmVuY2VzOiB7fQp1c2VyczoKLSBuYW1lOiB1c2VyCiAgdXNlcjoKICAgIHRva2VuOiB1LXR6dGFoeTdkcW06a2h3bmRudjhrY3F2dm00Y3picXRjenNyYmM0OHByc2JndHJxbHZyOXNwdjdzMnJzbmM3bGdqCg==
-#---
 apiVersion: v1
 kind: ConfigMap
 metadata:
