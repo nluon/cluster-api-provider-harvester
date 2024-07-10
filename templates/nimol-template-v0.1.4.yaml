@@ -9,7 +9,7 @@ metadata:
   namespace: ${NAMESPACE}
   name: ${CLUSTER_NAME} 
   labels:
-${RANCHER_TURTLES_LABEL}
+    type: ${RANCHER_TURTLES_LABEL}
     ccm: external
     csi: external
     cni: external
@@ -566,7 +566,15 @@ data:
       - kind: ServiceAccount
         name: harvester-cloud-controller-manager
         namespace: kube-system
-${CLOUD_CONFIG_SECRET}
+    ---
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: cloud-config
+      namespace: kube-system
+    type: Opaque
+    data:
+      cloud-config: ${CLOUD_CONFIG_SECRE}
 ---
 apiVersion: v1
 kind: ConfigMap
