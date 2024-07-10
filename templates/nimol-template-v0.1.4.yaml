@@ -574,7 +574,7 @@ data:
       namespace: kube-system
     type: Opaque
     data:
-      cloud-config: ${CLOUD_CONFIG_SECRE}
+      cloud-config: ${CLOUD_CONFIG_SECRET}
 ---
 apiVersion: v1
 kind: ConfigMap
