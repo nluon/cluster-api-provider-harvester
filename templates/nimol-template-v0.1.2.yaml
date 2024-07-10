@@ -118,7 +118,7 @@ spec:
       sshUser: ubuntu
       sshKeyPair: ${SSH_KEYPAIR}  
       networks:
-      - default/untagged
+      - ${VM_NETWORK}
       volumes:
       - volumeType: image 
         imageName: ${VM_IMAGE_NAME}
@@ -138,7 +138,7 @@ spec:
       sshUser: ubuntu
       sshKeyPair: ${SSH_KEYPAIR}  
       networks:
-      - default/untagged
+      - ${VM_NETWORK}
       volumes:
       - volumeType: image 
         imageName: ${VM_IMAGE_NAME}
