@@ -365,7 +365,6 @@ data:
             - args:
                 - --v=5
                 - --csi-address=$(ADDRESS)
-								   
                 - --leader-election
                 - --leader-election-namespace=$(POD_NAMESPACE)
               env:
@@ -385,8 +384,7 @@ data:
                 - --v=5
                 - --csi-address=$(ADDRESS)
                 - --timeout=2m5s
-                - --leader-election
-											   
+                - --leader-election											   
                 - --leader-election-namespace=$(POD_NAMESPACE)
               env:
                 - name: ADDRESS
